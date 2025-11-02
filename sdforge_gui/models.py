@@ -46,7 +46,7 @@ class GenerationRequest:
         if self.subseed is not None:
             payload["subseed"] = self.subseed
         if self.clip_skip is not None:
-            payload.setdefault("override_settings", {})["clip_skip"] = self.clip_skip
+            payload.setdefault("override_settings", {})["CLIP_stop_at_last_layers"] = self.clip_skip
         if self.checkpoint:
             payload["override_settings"] = payload.get("override_settings", {})
             payload["override_settings"]["sd_model_checkpoint"] = self.checkpoint
