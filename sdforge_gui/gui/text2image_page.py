@@ -1,7 +1,7 @@
 """Qt widgets for the Text-to-Image tab."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Callable, Dict, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -174,18 +174,30 @@ class TextToImageWidget(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------
     def _load_initial_metadata(self) -> None:
+        errors: list[str] = []
+
+        def fetch_list(name: str, callback: Callable[[], list[str]]) -> list[str]:
+            try:
+                return callback()
+            except StableDiffusionAPIError as api_error:
+                errors.append(f"{name}: {api_error}")
+            except Exception as generic_error:  # pragma: no cover - runtime
+                errors.append(f"{name}: {generic_error}")
+            return []
+
+        checkpoints = fetch_list("Checkpoints", self.client.list_checkpoints)
+        vaes = fetch_list("VAEs", self.client.list_vaes)
+        encoders = fetch_list("Text encoders", self.client.list_text_encoders)
+        samplers = fetch_list("Samplers", self.client.list_samplers)
+        schedulers = fetch_list("Schedulers", self.client.list_schedulers)
+
+        options: Dict[str, Any] = {}
         try:
-            checkpoints = self.client.list_checkpoints()
-            vaes = self.client.list_vaes()
-            encoders = self.client.list_text_encoders()
-            samplers = self.client.list_samplers()
-            schedulers = self.client.list_schedulers()
-        except StableDiffusionAPIError as error:
-            QtWidgets.QMessageBox.critical(self, "API error", str(error))
-            checkpoints = vaes = encoders = samplers = schedulers = []
-        except Exception as error:  # pragma: no cover - runtime
-            QtWidgets.QMessageBox.warning(self, "Warning", f"Failed to load metadata: {error}")
-            checkpoints = vaes = encoders = samplers = schedulers = []
+            options = self.client.get_options()
+        except StableDiffusionAPIError as api_error:
+            errors.append(f"Options: {api_error}")
+        except Exception as generic_error:  # pragma: no cover - runtime
+            errors.append(f"Options: {generic_error}")
 
         def populate(combo: QtWidgets.QComboBox, values: list[str]) -> None:
             combo.clear()
@@ -198,6 +210,59 @@ class TextToImageWidget(QtWidgets.QWidget):
         populate(self.text_encoder_combo, encoders)
         populate(self.sampler_combo, samplers)
         populate(self.scheduler_combo, schedulers)
+
+        if errors:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Metadata issues",
+                "\n".join(errors),
+            )
+            self.status_label.setText("Metadata loaded with warnings.")
+        else:
+            self.status_label.setText("Metadata loaded.")
+
+        self._apply_initial_options(options)
+
+    def _apply_initial_options(self, options: Dict[str, Any]) -> None:
+        if not options:
+            return
+
+        self._select_combo_value(self.checkpoint_combo, options.get("sd_model_checkpoint"))
+        self._select_combo_value(self.vae_combo, options.get("sd_vae"))
+        self._select_combo_value(self.text_encoder_combo, options.get("sd_text_encoder"))
+        sampler_value = options.get("sampler_name")
+        if isinstance(sampler_value, str):
+            self._select_combo_value(self.sampler_combo, sampler_value)
+        else:
+            sampler_index = options.get("sampler_index")
+            if isinstance(sampler_index, int):
+                self._select_combo_by_index(self.sampler_combo, sampler_index)
+        self._select_combo_value(self.scheduler_combo, options.get("scheduler"))
+
+        clip_skip = options.get("CLIP_stop_at_last_layers")
+        if isinstance(clip_skip, int) and clip_skip >= 0:
+            self.clip_skip_spin.setValue(clip_skip)
+
+        gpu_limit = options.get("gpu_weights_limit_mb")
+        if isinstance(gpu_limit, int) and gpu_limit >= 0:
+            self.gpu_weight_spin.setValue(gpu_limit)
+
+        int_settings = {
+            "steps": self.steps_spin,
+            "width": self.width_spin,
+            "height": self.height_spin,
+            "batch_size": self.batch_size_spin,
+            "n_iter": self.batch_count_spin,
+            "seed": self.seed_spin,
+        }
+        for key, widget in int_settings.items():
+            value = options.get(key)
+            if isinstance(value, int) and value >= widget.minimum():
+                widget.setValue(value)
+
+        cfg_scale = options.get("cfg_scale")
+        if isinstance(cfg_scale, (int, float)):
+            self.cfg_scale_spin.setValue(float(cfg_scale))
 
     # ------------------------------------------------------------------
     def _build_request(self) -> GenerationRequest:
@@ -226,6 +291,39 @@ class TextToImageWidget(QtWidgets.QWidget):
         if value is None or value == "":
             return None
         return value
+
+    def _select_combo_value(self, combo: QtWidgets.QComboBox, value: Any) -> None:
+        if value in (None, ""):
+            return
+        if not isinstance(value, str):
+            value = str(value)
+        match_flags = QtCore.Qt.MatchFlag.MatchFixedString
+        index = combo.findData(value)
+        if index < 0:
+            index = combo.findText(value, match_flags)
+        if index < 0:
+            lower_value = value.lower()
+            for row in range(combo.count()):
+                data = combo.itemData(row)
+                text = combo.itemText(row)
+                if isinstance(data, str) and data.lower() == lower_value:
+                    index = row
+                    break
+                if text.lower() == lower_value:
+                    index = row
+                    break
+        if index < 0:
+            combo.addItem(value, userData=value)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+
+    def _select_combo_by_index(self, combo: QtWidgets.QComboBox, index: int) -> None:
+        if index < 0:
+            return
+        # Account for the "Auto" entry we prepend to every combo box
+        adjusted_index = index + 1 if combo.count() > 0 else index
+        if 0 <= adjusted_index < combo.count():
+            combo.setCurrentIndex(adjusted_index)
 
     # ------------------------------------------------------------------
     def _on_generate_clicked(self) -> None:

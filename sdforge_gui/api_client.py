@@ -5,7 +5,7 @@ import base64
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import requests
 
@@ -55,21 +55,59 @@ class StableDiffusionClient:
         return response.json()
 
     # --- metadata endpoints --------------------------------------------
+    def _coerce_strings(self, values: Iterable[Any]) -> List[str]:
+        result: List[str] = []
+        for value in values:
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                value = str(value)
+            trimmed = value.strip()
+            if trimmed:
+                result.append(trimmed)
+        return result
+
+    def _extract_names(self, items: Sequence[Any], *keys: str) -> List[str]:
+        names: List[str] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in keys:
+                value = item.get(key)
+                if value:
+                    names.append(str(value))
+                    break
+        return self._coerce_strings(names)
+
     def list_checkpoints(self) -> List[str]:
         data = self._request("GET", "/sdapi/v1/sd-models")
-        return [item.get("title", item.get("model_name")) for item in data]
+        if isinstance(data, list):
+            return self._extract_names(data, "title", "model_name", "filename", "name")
+        return []
 
     def list_vaes(self) -> List[str]:
         data = self._request("GET", "/sdapi/v1/sd-vae")
-        return [item.get("model_name", item.get("title")) for item in data]
+        if isinstance(data, list):
+            return self._extract_names(data, "model_name", "title", "filename", "name")
+        return []
 
     def list_text_encoders(self) -> List[str]:
         data = self._request("GET", "/sdapi/v1/sd-embeddings")
-        return list(data.keys())
+        names: List[str] = []
+        if isinstance(data, dict):
+            for key in ("loaded", "skipped"):
+                group = data.get(key, {})
+                if isinstance(group, dict):
+                    names.extend(group.keys())
+        elif isinstance(data, list):
+            names.extend(item for item in data if isinstance(item, str))
+        return self._coerce_strings(sorted(set(names)))
 
     def list_samplers(self) -> List[str]:
         data = self._request("GET", "/sdapi/v1/samplers")
-        return [item.get("name") for item in data]
+        if isinstance(data, list):
+            return self._extract_names(data, "name", "title")
+        return []
 
     def list_schedulers(self) -> List[str]:
         try:
@@ -79,7 +117,16 @@ class StableDiffusionClient:
                 logger.info("Schedulers endpoint unavailable; returning empty list")
                 return []
             raise
-        return [item.get("name") for item in data]
+        if isinstance(data, list):
+            return self._extract_names(data, "name", "title")
+        return []
+
+    def get_options(self) -> Dict[str, Any]:
+        data = self._request("GET", "/sdapi/v1/options")
+        if isinstance(data, dict):
+            return data
+        logger.warning("Unexpected payload for /options endpoint: %s", type(data))
+        return {}
 
     # --- generation -----------------------------------------------------
     def text_to_image(self, payload: Dict[str, Any]) -> List[GeneratedImage]:
