@@ -33,7 +33,17 @@ class StableDiffusionClient:
     """A thin wrapper around the Stable Diffusion Forge HTTP API."""
 
     def __init__(self, base_url: str = "http://127.0.0.1:7860") -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @base_url.setter
+    def base_url(self, value: str) -> None:
+        if not value:
+            raise ValueError("Base URL cannot be empty")
+        self._base_url = value.rstrip("/")
 
     # --- helper methods -------------------------------------------------
     def _url(self, path: str) -> str:

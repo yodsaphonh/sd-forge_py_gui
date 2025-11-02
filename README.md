@@ -44,6 +44,9 @@ A PyQt-based desktop interface for driving a running Stable Diffusion Forge inst
 
    The batch script also forwards any extra arguments, so you can run `run.bat --api-url http://192.168.0.42:7860`.
 
+   You can also adjust the API endpoint after launch using the **API base URL** field located above the tabs. The GUI updates its
+   connection immediately and remembers the last address you entered for the next session.
+
 ## Text-to-Image workflow
 
 - Fill in the prompt and negative prompt fields.

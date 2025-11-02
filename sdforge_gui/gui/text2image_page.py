@@ -55,7 +55,7 @@ class TextToImageWidget(QtWidgets.QWidget):
 
         self._build_ui()
         self._connect_signals()
-        self._load_initial_metadata()
+        self._load_metadata()
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -220,9 +220,24 @@ class TextToImageWidget(QtWidgets.QWidget):
             edit.textChanged.connect(partial(self._persist_text_value, key, edit))
 
     # ------------------------------------------------------------------
-    def _load_initial_metadata(self) -> None:
+    def is_generation_active(self) -> bool:
+        return self._thread is not None and self._thread.isRunning()
+
+    def reload_metadata(self) -> None:
+        if self.is_generation_active():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Generation in progress",
+                "Please wait for the current generation to finish before refreshing metadata.",
+            )
+            return
+        self._load_metadata()
+
+    # ------------------------------------------------------------------
+    def _load_metadata(self) -> None:
         errors: list[str] = []
         self._loading_state = True
+        self.status_label.setText("Loading metadata...")
 
         def fetch_list(name: str, callback: Callable[[], list[str]]) -> list[str]:
             try:
