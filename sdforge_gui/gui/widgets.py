@@ -1,6 +1,8 @@
 """Shared custom Qt widgets."""
 from __future__ import annotations
 
+import re
+from decimal import Decimal, InvalidOperation
 from typing import Iterable, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -23,6 +25,15 @@ class NoWheelSpinBox(_NoWheelMixin, QtWidgets.QSpinBox):
 
 class NoWheelDoubleSpinBox(_NoWheelMixin, QtWidgets.QDoubleSpinBox):
     """Floating point spin box that ignores mouse wheel scrolling."""
+
+
+_TAG_WEIGHT_PATTERN = re.compile(
+    r"^\(\s*(?P<tag>.+?)\s*:\s*(?P<weight>-?\d+(?:\.\d+)?)\s*\)$"
+)
+
+_SIMPLE_TAG_WEIGHT_PATTERN = re.compile(
+    r"^(?P<tag>.+?)\s*:\s*(?P<weight>-?\d+(?:\.\d+)?)$"
+)
 
 
 class PromptTextEdit(QtWidgets.QPlainTextEdit):
@@ -61,6 +72,15 @@ class PromptTextEdit(QtWidgets.QPlainTextEdit):
 
     # ------------------------------------------------------------------
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # type: ignore[override]
+        if (
+            event.modifiers() == QtCore.Qt.KeyboardModifier.NoModifier
+            and event.key() in {QtCore.Qt.Key.Key_Up, QtCore.Qt.Key.Key_Down}
+        ):
+            delta = Decimal("0.5") if event.key() == QtCore.Qt.Key.Key_Up else Decimal("-0.5")
+            if self._adjust_selected_tag_weight(delta):
+                event.accept()
+                return
+
         if self._completer.popup().isVisible():
             if event.key() in {
                 QtCore.Qt.Key.Key_Tab,
@@ -165,3 +185,117 @@ class PromptTextEdit(QtWidgets.QPlainTextEdit):
     def insertFromMimeData(self, source: QtCore.QMimeData) -> None:  # type: ignore[override]
         super().insertFromMimeData(source)
         self._show_completions(False)
+
+    # ------------------------------------------------------------------
+    def _adjust_selected_tag_weight(self, delta: Decimal) -> bool:
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            return False
+
+        text = self.toPlainText()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        if start == end:
+            return False
+
+        raw_selection = cursor.selectedText().replace("\u2029", "\n")
+        if not raw_selection or "\n" in raw_selection or "\r" in raw_selection:
+            return False
+
+        leading_ws = len(raw_selection) - len(raw_selection.lstrip())
+        trailing_ws = len(raw_selection) - len(raw_selection.rstrip())
+        core_start = start + leading_ws
+        core_end = end - trailing_ws
+        if core_start >= core_end:
+            return False
+
+        core_text = text[core_start:core_end]
+        trimmed = core_text.strip()
+        if not trimmed:
+            return False
+
+        match = _TAG_WEIGHT_PATTERN.match(trimmed)
+        if match:
+            tag = match.group("tag").strip()
+            try:
+                weight = Decimal(match.group("weight"))
+            except InvalidOperation:
+                return False
+            token_relative_start = core_text.find(match.group(0))
+            if token_relative_start == -1:
+                return False
+            core_start += token_relative_start
+            core_end = core_start + len(match.group(0))
+        else:
+            simple_match = _SIMPLE_TAG_WEIGHT_PATTERN.match(trimmed)
+            if simple_match:
+                tag = simple_match.group("tag").strip()
+                try:
+                    weight = Decimal(simple_match.group("weight"))
+                except InvalidOperation:
+                    return False
+                token_relative_start = core_text.find(simple_match.group(0))
+                if token_relative_start == -1:
+                    return False
+                core_start += token_relative_start
+                core_end = core_start + len(simple_match.group(0))
+            else:
+                # Check if the selection sits inside an existing weighted tag.
+                expanded_start = core_start
+                expanded_end = core_end
+                if expanded_start > 0 and text[expanded_start - 1] == "(":
+                    closing_index = text.find(")", expanded_end)
+                    if closing_index != -1:
+                        candidate = text[expanded_start - 1 : closing_index + 1]
+                        candidate_match = _TAG_WEIGHT_PATTERN.match(candidate.strip())
+                        if candidate_match:
+                            try:
+                                weight = Decimal(candidate_match.group("weight"))
+                            except InvalidOperation:
+                                return False
+                            tag = candidate_match.group("tag").strip()
+                            core_start = expanded_start - 1
+                            core_end = closing_index + 1
+                        else:
+                            inner = candidate.strip()[1:-1].strip()
+                            if not inner:
+                                return False
+                            if "," in inner:
+                                return False
+                            tag = inner
+                            weight = Decimal("1.0")
+                            core_start = expanded_start - 1
+                            core_end = closing_index + 1
+                    else:
+                        return False
+                else:
+                    if "," in trimmed:
+                        return False
+                    tag = trimmed
+                    weight = Decimal("1.0")
+
+        new_weight = weight + delta
+        if new_weight < Decimal("0"):
+            new_weight = Decimal("0")
+
+        normalized = new_weight.normalize()
+        if normalized == normalized.to_integral():
+            formatted_weight = f"{normalized:.1f}"
+        else:
+            formatted_weight = format(normalized.normalize(), "f").rstrip("0").rstrip(".")
+            if not formatted_weight:
+                formatted_weight = "0"
+
+        replacement = f"({tag}:{formatted_weight})"
+
+        cursor.beginEditBlock()
+        try:
+            cursor.setPosition(core_start)
+            cursor.setPosition(core_end, QtGui.QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(replacement)
+            cursor.setPosition(core_start)
+            cursor.setPosition(core_start + len(replacement), QtGui.QTextCursor.MoveMode.KeepAnchor)
+        finally:
+            cursor.endEditBlock()
+        self.setTextCursor(cursor)
+        return True
