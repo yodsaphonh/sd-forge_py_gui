@@ -1,0 +1,840 @@
+"""Qt widgets for the Text-to-Image tab."""
+from __future__ import annotations
+
+import json
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from PyQt6 import QtCore, QtGui, QtWidgets
+
+from ..api_client import GeneratedImage, StableDiffusionClient, StableDiffusionAPIError
+from ..models import GenerationRequest, LoraInfo, LoraSelection
+from ..tag_completion import TagRepository
+from ..ui_config import UIConfig
+from .widgets import (
+    LoraSelectionList,
+    NoWheelComboBox,
+    NoWheelDoubleSpinBox,
+    NoWheelSpinBox,
+    PromptTextEdit,
+)
+
+
+class GenerationWorker(QtCore.QObject):
+    """Worker object that performs a text-to-image request in a separate thread."""
+
+    finished = QtCore.pyqtSignal(list)
+    error = QtCore.pyqtSignal(str)
+
+    def __init__(self, client: StableDiffusionClient, request: GenerationRequest) -> None:
+        super().__init__()
+        self._client = client
+        self._request = request
+
+    @QtCore.pyqtSlot()
+    def run(self) -> None:
+        try:
+            images = self._client.text_to_image(self._request.to_payload())
+        except Exception as exc:  # pragma: no cover - GUI runtime errors
+            self.error.emit(str(exc))
+        else:
+            self.finished.emit(images)
+
+
+class TextToImageWidget(QtWidgets.QWidget):
+    """Tab that allows triggering txt2img generations."""
+
+    def __init__(
+        self,
+        client: StableDiffusionClient,
+        ui_config: UIConfig,
+        parent: Optional[QtWidgets.QWidget] = None,
+    ) -> None:
+        super().__init__(parent=parent)
+        self.client = client
+        self.settings = QtCore.QSettings(self)
+        self.tag_repository = TagRepository()
+        self.ui_config = ui_config
+        self._thread: Optional[QtCore.QThread] = None
+        self._worker: Optional[GenerationWorker] = None
+        self._loading_state = False
+        self.form_layout: Optional[QtWidgets.QFormLayout] = None
+        self._available_loras: Dict[str, LoraInfo] = {}
+        self._lora_search_map: Dict[str, LoraInfo] = {}
+
+        self._build_ui()
+        self._connect_signals()
+        self._load_metadata()
+
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(16)
+
+        self.form_widget = QtWidgets.QWidget()
+        form_layout = QtWidgets.QFormLayout(self.form_widget)
+        self.form_layout = form_layout
+        form_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        form_layout.setSpacing(8)
+
+        self.prompt_edit = PromptTextEdit(self.tag_repository.tags)
+        self.prompt_edit.setPlaceholderText("Enter your prompt here...")
+        self.prompt_edit.setFixedHeight(100)
+
+        self.negative_prompt_edit = PromptTextEdit(self.tag_repository.tags)
+        self.negative_prompt_edit.setPlaceholderText("Negative prompt")
+        self.negative_prompt_edit.setFixedHeight(80)
+
+        self.checkpoint_combo = NoWheelComboBox()
+        self.vae_combo = NoWheelComboBox()
+        self.text_encoder_combo = NoWheelComboBox()
+        self.sampler_combo = NoWheelComboBox()
+        self.scheduler_combo = NoWheelComboBox()
+        self.lora_combo = NoWheelComboBox()
+        self.lora_combo.setEditable(True)
+        self.lora_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.lora_combo.lineEdit().setPlaceholderText("Search LoRA...")
+        self.lora_combo.lineEdit().setClearButtonEnabled(True)
+        self._lora_model = QtCore.QStringListModel([], self)
+        self._lora_completer = QtWidgets.QCompleter(self._lora_model, self.lora_combo)
+        self._lora_completer.setCaseSensitivity(QtCore.Qt.CaseSensitivity.CaseInsensitive)
+        self._lora_completer.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
+        self._lora_completer.setCompletionMode(QtWidgets.QCompleter.CompletionMode.PopupCompletion)
+        self.lora_combo.setCompleter(self._lora_completer)
+        self.lora_combo.setMaxVisibleItems(20)
+
+        self.lora_add_button = QtWidgets.QPushButton("Add")
+        self.lora_remove_button = QtWidgets.QPushButton("Remove")
+        self.lora_clear_button = QtWidgets.QPushButton("Clear")
+        self.lora_list = LoraSelectionList()
+
+        self.steps_spin = NoWheelSpinBox()
+        self.steps_spin.setRange(1, 200)
+        self.steps_spin.setValue(20)
+
+        self.clip_skip_spin = NoWheelSpinBox()
+        self.clip_skip_spin.setRange(0, 12)
+        self.clip_skip_spin.setSpecialValueText("Default")
+        self.clip_skip_spin.setValue(0)
+
+        self.cfg_scale_spin = NoWheelDoubleSpinBox()
+        self.cfg_scale_spin.setRange(1.0, 30.0)
+        self.cfg_scale_spin.setSingleStep(0.5)
+        self.cfg_scale_spin.setValue(7.0)
+
+        self.width_spin = NoWheelSpinBox()
+        self.width_spin.setRange(64, 2048)
+        self.width_spin.setSingleStep(64)
+        self.width_spin.setValue(512)
+
+        self.height_spin = NoWheelSpinBox()
+        self.height_spin.setRange(64, 2048)
+        self.height_spin.setSingleStep(64)
+        self.height_spin.setValue(512)
+
+        self.batch_size_spin = NoWheelSpinBox()
+        self.batch_size_spin.setRange(1, 8)
+        self.batch_size_spin.setValue(1)
+
+        self.batch_count_spin = NoWheelSpinBox()
+        self.batch_count_spin.setRange(1, 16)
+        self.batch_count_spin.setValue(1)
+
+        self.seed_spin = NoWheelSpinBox()
+        self.seed_spin.setRange(-1, 2_147_483_647)
+        self.seed_spin.setSpecialValueText("Random")
+        self.seed_spin.setValue(-1)
+
+        self.gpu_weight_spin = NoWheelSpinBox()
+        self.gpu_weight_spin.setRange(0, 32_768)
+        self.gpu_weight_spin.setSpecialValueText("Auto")
+        self.gpu_weight_spin.setValue(0)
+
+        form_layout.addRow("Prompt", self.prompt_edit)
+        form_layout.addRow("Negative", self.negative_prompt_edit)
+        form_layout.addRow("Checkpoint", self.checkpoint_combo)
+        form_layout.addRow("VAE", self.vae_combo)
+        form_layout.addRow("Text Encoder", self.text_encoder_combo)
+        form_layout.addRow("Sampler", self.sampler_combo)
+        form_layout.addRow("Scheduler", self.scheduler_combo)
+        lora_container = QtWidgets.QWidget()
+        lora_layout = QtWidgets.QVBoxLayout(lora_container)
+        lora_layout.setContentsMargins(0, 0, 0, 0)
+        lora_layout.setSpacing(6)
+
+        lora_controls = QtWidgets.QHBoxLayout()
+        lora_controls.setContentsMargins(0, 0, 0, 0)
+        lora_controls.setSpacing(6)
+        lora_controls.addWidget(self.lora_combo, stretch=1)
+        lora_controls.addWidget(self.lora_add_button)
+        lora_controls.addWidget(self.lora_remove_button)
+        lora_controls.addWidget(self.lora_clear_button)
+
+        lora_layout.addLayout(lora_controls)
+        lora_layout.addWidget(self.lora_list)
+
+        self.lora_widget = lora_container
+        form_layout.addRow("LoRAs", lora_container)
+        form_layout.addRow("Sampling Steps", self.steps_spin)
+        form_layout.addRow("CFG Scale", self.cfg_scale_spin)
+        form_layout.addRow("Clip Skip", self.clip_skip_spin)
+        form_layout.addRow("Width", self.width_spin)
+        form_layout.addRow("Height", self.height_spin)
+        form_layout.addRow("Batch Size", self.batch_size_spin)
+        form_layout.addRow("Batch Count", self.batch_count_spin)
+        form_layout.addRow("Seed", self.seed_spin)
+        form_layout.addRow("GPU Weights (MB)", self.gpu_weight_spin)
+
+        self.generate_button = QtWidgets.QPushButton("Generate")
+        self.generate_button.setObjectName("generateButton")
+        self.generate_button.setMinimumHeight(40)
+
+        form_layout.addRow(self.generate_button)
+
+        layout.addWidget(self.form_widget, stretch=1)
+
+        # Preview panel --------------------------------------------------
+        preview_layout = QtWidgets.QVBoxLayout()
+        preview_layout.setSpacing(12)
+
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
+        self.preview_label = QtWidgets.QLabel("Image preview will appear here")
+        self.preview_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(320, 320)
+        self.preview_label.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.preview_label.setStyleSheet("background-color: #101010; color: #cccccc; border-radius: 8px;")
+        self.preview_label.setWordWrap(True)
+
+        self.info_box = QtWidgets.QTextEdit()
+        self.info_box.setReadOnly(True)
+        self.info_box.setFixedHeight(120)
+
+        preview_layout.addWidget(self.progress_bar)
+        preview_layout.addWidget(self.preview_label, stretch=1)
+        preview_layout.addWidget(self.info_box)
+
+        layout.addLayout(preview_layout, stretch=1)
+
+        self.status_label = QtWidgets.QLabel()
+        self.status_label.setObjectName("statusLabel")
+        preview_layout.addWidget(self.status_label)
+
+        self.progress_timer = QtCore.QTimer(self)
+        self.progress_timer.setInterval(1000)
+
+        self._update_lora_buttons()
+
+    # ------------------------------------------------------------------
+    def _connect_signals(self) -> None:
+        self.generate_button.clicked.connect(self._on_generate_clicked)
+        self.progress_timer.timeout.connect(self._refresh_progress)
+
+        combo_pairs = {
+            "text2image/checkpoint": self.checkpoint_combo,
+            "text2image/vae": self.vae_combo,
+            "text2image/text_encoder": self.text_encoder_combo,
+            "text2image/sampler": self.sampler_combo,
+            "text2image/scheduler": self.scheduler_combo,
+        }
+        for key, combo in combo_pairs.items():
+            combo.currentIndexChanged.connect(partial(self._persist_combo_value, key, combo))
+
+        self.lora_add_button.clicked.connect(self._on_add_lora_clicked)
+        self.lora_remove_button.clicked.connect(self._on_remove_lora_clicked)
+        self.lora_clear_button.clicked.connect(self._on_clear_loras_clicked)
+        self.lora_combo.activated.connect(self._on_lora_combo_activated)
+        self.lora_combo.lineEdit().returnPressed.connect(self._on_add_lora_clicked)
+        self.lora_list.selectionsChanged.connect(self._on_lora_selections_changed)
+        self.lora_list.itemSelectionChanged.connect(self._update_lora_buttons)
+
+        spin_pairs = {
+            "text2image/steps": self.steps_spin,
+            "text2image/clip_skip": self.clip_skip_spin,
+            "text2image/width": self.width_spin,
+            "text2image/height": self.height_spin,
+            "text2image/batch_size": self.batch_size_spin,
+            "text2image/batch_count": self.batch_count_spin,
+            "text2image/seed": self.seed_spin,
+            "text2image/gpu_weights": self.gpu_weight_spin,
+        }
+        for key, spin in spin_pairs.items():
+            spin.valueChanged.connect(partial(self._persist_spin_value, key))
+
+        self.cfg_scale_spin.valueChanged.connect(partial(self._persist_double_value, "text2image/cfg_scale"))
+
+        text_pairs = {
+            "text2image/prompt": self.prompt_edit,
+            "text2image/negative_prompt": self.negative_prompt_edit,
+        }
+        for key, edit in text_pairs.items():
+            edit.textChanged.connect(partial(self._persist_text_value, key, edit))
+
+    # ------------------------------------------------------------------
+    def is_generation_active(self) -> bool:
+        return self._thread is not None and self._thread.isRunning()
+
+    def reload_metadata(self) -> None:
+        if self.is_generation_active():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Generation in progress",
+                "Please wait for the current generation to finish before refreshing metadata.",
+            )
+            return
+        self._load_metadata()
+
+    # ------------------------------------------------------------------
+    def _load_metadata(self) -> None:
+        errors: list[str] = []
+        self._loading_state = True
+        self.status_label.setText("Loading metadata...")
+
+        def fetch_list(name: str, callback: Callable[[], list[str]]) -> list[str]:
+            try:
+                return callback()
+            except StableDiffusionAPIError as api_error:
+                errors.append(f"{name}: {api_error}")
+            except Exception as generic_error:  # pragma: no cover - runtime
+                errors.append(f"{name}: {generic_error}")
+            return []
+
+        checkpoints = fetch_list("Checkpoints", self.client.list_checkpoints)
+        vaes = fetch_list("VAEs", self.client.list_vaes)
+        encoders = fetch_list("Text encoders", self.client.list_text_encoders)
+        samplers = fetch_list("Samplers", self.client.list_samplers)
+        schedulers = fetch_list("Schedulers", self.client.list_schedulers)
+
+        loras: List[LoraInfo] = []
+
+        try:
+            loras = self.client.list_loras()
+        except StableDiffusionAPIError as api_error:
+            errors.append(f"LoRAs: {api_error}")
+        except Exception as generic_error:  # pragma: no cover - runtime
+            errors.append(f"LoRAs: {generic_error}")
+
+        options: Dict[str, Any] = {}
+        try:
+            options = self.client.get_options()
+        except StableDiffusionAPIError as api_error:
+            errors.append(f"Options: {api_error}")
+        except Exception as generic_error:  # pragma: no cover - runtime
+            errors.append(f"Options: {generic_error}")
+
+        def populate(combo: QtWidgets.QComboBox, values: list[str]) -> None:
+            combo.clear()
+            combo.addItem("Auto", userData=None)
+            for value in values:
+                combo.addItem(value, userData=value)
+
+        populate(self.checkpoint_combo, checkpoints)
+        populate(self.vae_combo, vaes)
+        populate(self.text_encoder_combo, encoders)
+        populate(self.sampler_combo, samplers)
+        populate(self.scheduler_combo, schedulers)
+        self._populate_loras(loras)
+
+        if errors:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Metadata issues",
+                "\n".join(errors),
+            )
+            self.status_label.setText("Metadata loaded with warnings.")
+        else:
+            self.status_label.setText("Metadata loaded.")
+
+        try:
+            self._apply_initial_options(options)
+            self._restore_persistent_state()
+            self._apply_ui_config()
+        finally:
+            self._loading_state = False
+
+    def _populate_loras(self, loras: List[LoraInfo]) -> None:
+        self._available_loras = {info.name: info for info in loras}
+        search_map: Dict[str, LoraInfo] = {}
+        for info in loras:
+            search_map[info.name.lower()] = info
+            if info.alias:
+                search_map.setdefault(info.alias.lower(), info)
+            search_map.setdefault(info.display_name.lower(), info)
+        self._lora_search_map = search_map
+
+        with QtCore.QSignalBlocker(self.lora_combo):
+            self.lora_combo.clear()
+            self.lora_combo.addItem("Select LoRA", userData=None)
+            for info in loras:
+                self.lora_combo.addItem(info.display_name, userData=info)
+            self.lora_combo.setCurrentIndex(0)
+
+        self._lora_model.setStringList([info.display_name for info in loras])
+        self._update_lora_buttons()
+
+    def _apply_initial_options(self, options: Dict[str, Any]) -> None:
+        if not options:
+            return
+
+        self._select_combo_value(self.checkpoint_combo, options.get("sd_model_checkpoint"))
+        self._select_combo_value(self.vae_combo, options.get("sd_vae"))
+        self._select_combo_value(self.text_encoder_combo, options.get("sd_text_encoder"))
+        sampler_value = options.get("sampler_name")
+        if isinstance(sampler_value, str):
+            self._select_combo_value(self.sampler_combo, sampler_value)
+        else:
+            sampler_index = options.get("sampler_index")
+            if isinstance(sampler_index, int):
+                self._select_combo_by_index(self.sampler_combo, sampler_index)
+        self._select_combo_value(self.scheduler_combo, options.get("scheduler"))
+
+        clip_skip = options.get("CLIP_stop_at_last_layers")
+        if isinstance(clip_skip, int) and clip_skip >= 0:
+            self.clip_skip_spin.setValue(clip_skip)
+
+        gpu_limit = options.get("gpu_weights_limit_mb")
+        if isinstance(gpu_limit, int) and gpu_limit >= 0:
+            self.gpu_weight_spin.setValue(gpu_limit)
+
+        int_settings = {
+            "steps": self.steps_spin,
+            "width": self.width_spin,
+            "height": self.height_spin,
+            "batch_size": self.batch_size_spin,
+            "n_iter": self.batch_count_spin,
+            "seed": self.seed_spin,
+        }
+        for key, widget in int_settings.items():
+            value = options.get(key)
+            if isinstance(value, int) and value >= widget.minimum():
+                widget.setValue(value)
+
+        cfg_scale = options.get("cfg_scale")
+        if isinstance(cfg_scale, (int, float)):
+            self.cfg_scale_spin.setValue(float(cfg_scale))
+
+    # ------------------------------------------------------------------
+    def _build_request(self) -> GenerationRequest:
+        request = GenerationRequest(
+            prompt=self.prompt_edit.toPlainText().strip(),
+            negative_prompt=self.negative_prompt_edit.toPlainText().strip(),
+            steps=self.steps_spin.value(),
+            sampler=self._selected_value(self.sampler_combo) or "Euler a",
+            scheduler=self._selected_value(self.scheduler_combo),
+            cfg_scale=self.cfg_scale_spin.value(),
+            width=self.width_spin.value(),
+            height=self.height_spin.value(),
+            batch_size=self.batch_size_spin.value(),
+            batch_count=self.batch_count_spin.value(),
+            seed=self.seed_spin.value(),
+            clip_skip=self.clip_skip_spin.value() or None,
+            checkpoint=self._selected_value(self.checkpoint_combo),
+            vae=self._selected_value(self.vae_combo),
+            text_encoder=self._selected_value(self.text_encoder_combo),
+            gpu_weights_mb=self.gpu_weight_spin.value() or None,
+            loras=[
+                LoraSelection(name=info.name, alias=info.alias, weight=weight)
+                for info, weight in self.lora_list.selections()
+            ],
+        )
+        return request
+
+    def _selected_value(self, combo: QtWidgets.QComboBox) -> Optional[str]:
+        value = combo.currentData()
+        if value is None or value == "":
+            return None
+        return value
+
+    def _select_combo_value(self, combo: QtWidgets.QComboBox, value: Any) -> None:
+        if value in (None, ""):
+            return
+        if not isinstance(value, str):
+            value = str(value)
+        match_flags = QtCore.Qt.MatchFlag.MatchFixedString
+        index = combo.findData(value)
+        if index < 0:
+            index = combo.findText(value, match_flags)
+        if index < 0:
+            lower_value = value.lower()
+            for row in range(combo.count()):
+                data = combo.itemData(row)
+                text = combo.itemText(row)
+                if isinstance(data, str) and data.lower() == lower_value:
+                    index = row
+                    break
+                if text.lower() == lower_value:
+                    index = row
+                    break
+        if index < 0:
+            combo.addItem(value, userData=value)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+
+    # ------------------------------------------------------------------
+    def _restore_persistent_state(self) -> None:
+        combos = {
+            "text2image/checkpoint": self.checkpoint_combo,
+            "text2image/vae": self.vae_combo,
+            "text2image/text_encoder": self.text_encoder_combo,
+            "text2image/sampler": self.sampler_combo,
+            "text2image/scheduler": self.scheduler_combo,
+        }
+        for key, combo in combos.items():
+            if not self.settings.contains(key):
+                continue
+            value = self.settings.value(key)
+            if value not in (None, ""):
+                self._select_combo_value(combo, value)
+
+        int_widgets: dict[str, QtWidgets.QSpinBox] = {
+            "text2image/steps": self.steps_spin,
+            "text2image/clip_skip": self.clip_skip_spin,
+            "text2image/width": self.width_spin,
+            "text2image/height": self.height_spin,
+            "text2image/batch_size": self.batch_size_spin,
+            "text2image/batch_count": self.batch_count_spin,
+            "text2image/seed": self.seed_spin,
+            "text2image/gpu_weights": self.gpu_weight_spin,
+        }
+        for key, widget in int_widgets.items():
+            if not self.settings.contains(key):
+                continue
+            value = self.settings.value(key, type=int)
+            if isinstance(value, int) and value >= widget.minimum():
+                widget.setValue(value)
+
+        if self.settings.contains("text2image/cfg_scale"):
+            cfg_value = self.settings.value("text2image/cfg_scale", type=float)
+            if isinstance(cfg_value, (int, float)):
+                self.cfg_scale_spin.setValue(float(cfg_value))
+
+        text_edits: dict[str, QtWidgets.QPlainTextEdit] = {
+            "text2image/prompt": self.prompt_edit,
+            "text2image/negative_prompt": self.negative_prompt_edit,
+        }
+        for key, edit in text_edits.items():
+            if not self.settings.contains(key):
+                continue
+            value = self.settings.value(key, type=str)
+            if value is not None:
+                edit.setPlainText(value)
+
+        self._restore_lora_state()
+
+    def _apply_ui_config(self) -> None:
+        entries = self.ui_config.section("txt2img") if self.ui_config else {}
+        if not entries:
+            return
+        mapping = self._ui_config_mapping()
+        for control, props in entries.items():
+            widget = mapping.get(self._normalize_config_name(control))
+            if widget is None:
+                continue
+            UIConfig.apply_properties(widget, props, self.form_layout)
+
+    def _ui_config_mapping(self) -> Dict[str, QtWidgets.QWidget]:
+        mapping: Dict[str, QtWidgets.QWidget] = {}
+
+        def register(names: tuple[str, ...], widget: QtWidgets.QWidget) -> None:
+            for name in names:
+                mapping[self._normalize_config_name(name)] = widget
+
+        register(("Prompt",), self.prompt_edit)
+        register(("Negative", "Negative prompt"), self.negative_prompt_edit)
+        register(("Checkpoint",), self.checkpoint_combo)
+        register(("VAE",), self.vae_combo)
+        register(("Text Encoder", "Text encoder"), self.text_encoder_combo)
+        register(("Sampler", "Sampling method"), self.sampler_combo)
+        register(("Scheduler", "Schedule type"), self.scheduler_combo)
+        register(("LoRA", "LoRAs"), self.lora_widget)
+        register(("Sampling steps", "Steps"), self.steps_spin)
+        register(("CFG Scale", "CFG scale"), self.cfg_scale_spin)
+        register(("Clip skip",), self.clip_skip_spin)
+        register(("Width",), self.width_spin)
+        register(("Height",), self.height_spin)
+        register(("Batch size",), self.batch_size_spin)
+        register(("Batch count", "Batch"), self.batch_count_spin)
+        register(("Seed",), self.seed_spin)
+        register(("GPU Weights", "GPU Weights (MB)", "GPU weights"), self.gpu_weight_spin)
+        register(("Generate", "Generate button"), self.generate_button)
+        register(("Progress", "Progress bar"), self.progress_bar)
+        register(("Preview", "Image preview"), self.preview_label)
+        register(("Info", "Image info"), self.info_box)
+        register(("Status", "Status label"), self.status_label)
+
+        return mapping
+
+    @staticmethod
+    def _normalize_config_name(name: str) -> str:
+        cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in name)
+        return "_".join(part for part in cleaned.split())
+
+    def _restore_lora_state(self) -> None:
+        key = "text2image/loras"
+        if not self.settings.contains(key):
+            self.lora_list.clear()
+            self._update_lora_buttons()
+            return
+
+        raw_value = self.settings.value(key, type=str)
+        if not raw_value:
+            self.lora_list.clear()
+            self._update_lora_buttons()
+            return
+
+        try:
+            stored = json.loads(raw_value)
+        except (TypeError, ValueError, json.JSONDecodeError):  # pragma: no cover - defensive
+            return
+
+        selections: List[Tuple[LoraInfo, float]] = []
+        missing: list[str] = []
+        if isinstance(stored, list):
+            for entry in stored:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not isinstance(name, str):
+                    continue
+                weight_raw = entry.get("weight", 1.0)
+                try:
+                    weight = float(weight_raw)
+                except (TypeError, ValueError):
+                    weight = 1.0
+                info = self._available_loras.get(name)
+                if info is None:
+                    missing.append(name)
+                    continue
+                selections.append((info, weight))
+
+        if selections:
+            self.lora_list.set_selections(selections)
+        else:
+            self.lora_list.clear()
+
+        if missing:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Missing LoRAs",
+                "Some saved LoRAs could not be found:\n" + ", ".join(missing),
+            )
+        self._update_lora_buttons()
+
+    def _persist_combo_value(self, key: str, combo: QtWidgets.QComboBox, _index: int) -> None:
+        if self._loading_state:
+            return
+        value = combo.currentData()
+        if value in (None, ""):
+            self.settings.remove(key)
+        else:
+            self.settings.setValue(key, value)
+        self.settings.sync()
+
+    def _persist_spin_value(self, key: str, value: int) -> None:
+        if self._loading_state:
+            return
+        self.settings.setValue(key, int(value))
+        self.settings.sync()
+
+    def _persist_double_value(self, key: str, value: float) -> None:
+        if self._loading_state:
+            return
+        self.settings.setValue(key, float(value))
+        self.settings.sync()
+
+    def _persist_text_value(self, key: str, edit: QtWidgets.QPlainTextEdit) -> None:
+        if self._loading_state:
+            return
+        self.settings.setValue(key, edit.toPlainText())
+        self.settings.sync()
+
+    def _persist_lora_state(self) -> None:
+        if self._loading_state:
+            return
+        selections = [
+            {"name": info.name, "alias": info.alias, "weight": weight}
+            for info, weight in self.lora_list.selections()
+        ]
+        self.settings.setValue("text2image/loras", json.dumps(selections))
+        self.settings.sync()
+
+    def _select_combo_by_index(self, combo: QtWidgets.QComboBox, index: int) -> None:
+        if index < 0:
+            return
+        # Account for the "Auto" entry we prepend to every combo box
+        adjusted_index = index + 1 if combo.count() > 0 else index
+        if 0 <= adjusted_index < combo.count():
+            combo.setCurrentIndex(adjusted_index)
+
+    def _on_lora_selections_changed(self) -> None:
+        self._update_lora_buttons()
+        self._persist_lora_state()
+
+    def _on_add_lora_clicked(self) -> None:
+        info = None
+        index = self.lora_combo.currentIndex()
+        if index > 0:
+            data = self.lora_combo.itemData(index)
+            if isinstance(data, LoraInfo):
+                info = data
+        if info is None:
+            text = self.lora_combo.lineEdit().text()
+            info = self._match_lora_text(text)
+        if info is None:
+            return
+        self.lora_list.add_or_update(info)
+        self.lora_combo.lineEdit().clear()
+        self.lora_combo.setCurrentIndex(0)
+
+    def _on_remove_lora_clicked(self) -> None:
+        self.lora_list.remove_selected()
+
+    def _on_clear_loras_clicked(self) -> None:
+        if self.lora_list.count() == 0:
+            return
+        self.lora_list.clear()
+
+    def _on_lora_combo_activated(self, index: int) -> None:
+        if index <= 0:
+            return
+        data = self.lora_combo.itemData(index)
+        if isinstance(data, LoraInfo):
+            self.lora_list.add_or_update(data)
+        self.lora_combo.setCurrentIndex(0)
+        self.lora_combo.lineEdit().clear()
+
+    def _match_lora_text(self, text: str) -> Optional[LoraInfo]:
+        normalized = text.strip().lower()
+        if not normalized:
+            return None
+        return self._lora_search_map.get(normalized)
+
+    def _update_lora_buttons(self) -> None:
+        has_entries = self.lora_list.count() > 0
+        has_selection = self.lora_list.currentItem() is not None
+        self.lora_remove_button.setEnabled(has_selection)
+        self.lora_clear_button.setEnabled(has_entries)
+
+    # ------------------------------------------------------------------
+    def _on_generate_clicked(self) -> None:
+        if self._thread is not None and self._thread.isRunning():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Generation in progress",
+                "Please wait for the current generation to finish before starting a new one.",
+            )
+            return
+
+        request = self._build_request()
+        if not request.prompt:
+            QtWidgets.QMessageBox.information(self, "Missing prompt", "Please enter a prompt to generate.")
+            return
+
+        self.generate_button.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.info_box.clear()
+        self.status_label.setText("Generating...")
+
+        self._thread = QtCore.QThread(self)
+        worker = GenerationWorker(self.client, request)
+        self._worker = worker
+        worker.moveToThread(self._thread)
+        self._thread.started.connect(worker.run)
+        worker.finished.connect(self._on_generation_finished)
+        worker.finished.connect(self._thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(self._on_generation_error)
+        worker.error.connect(self._thread.quit)
+        worker.error.connect(worker.deleteLater)
+        self._thread.finished.connect(self._on_thread_finished)
+
+        self._thread.start()
+        self.progress_timer.start()
+
+    # ------------------------------------------------------------------
+    @QtCore.pyqtSlot(list)
+    def _on_generation_finished(self, images: list[GeneratedImage]) -> None:
+        self.progress_timer.stop()
+        self.generate_button.setEnabled(True)
+        self.status_label.setText("Generation finished.")
+        self.progress_bar.setValue(100)
+
+        if not images:
+            self.info_box.setPlainText("No images returned by the API.")
+            return
+
+        image = images[0]
+        qimage = QtGui.QImage.fromData(image.data)
+        pixmap = QtGui.QPixmap.fromImage(qimage)
+        scaled = pixmap.scaled(
+            self.preview_label.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_label.setPixmap(scaled)
+
+        info_lines = [f"Seed: {image.seed}"]
+        for key, value in sorted(image.info.items() if isinstance(image.info, dict) else []):
+            info_lines.append(f"{key}: {value}")
+        self.info_box.setPlainText("\n".join(info_lines))
+
+    @QtCore.pyqtSlot(str)
+    def _on_generation_error(self, message: str) -> None:
+        self.progress_timer.stop()
+        self.generate_button.setEnabled(True)
+        self.status_label.setText("Generation failed.")
+        QtWidgets.QMessageBox.critical(self, "Generation error", message)
+
+    @QtCore.pyqtSlot()
+    def _on_thread_finished(self) -> None:
+        thread = self._thread
+        self._worker = None
+        self._thread = None
+        if thread is None:
+            return
+        if thread.isRunning():  # pragma: no cover - safety guard
+            thread.wait()
+        thread.deleteLater()
+
+    # ------------------------------------------------------------------
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # pragma: no cover - UI only
+        super().resizeEvent(event)
+        if not self.preview_label.pixmap():
+            return
+        pixmap = self.preview_label.pixmap()
+        scaled = pixmap.scaled(
+            self.preview_label.size(),
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview_label.setPixmap(scaled)
+
+    # ------------------------------------------------------------------
+    def _refresh_progress(self) -> None:
+        try:
+            progress = self.client.get_progress()
+        except Exception as error:  # pragma: no cover - runtime
+            self.status_label.setText(f"Progress error: {error}")
+            return
+
+        if not progress:
+            return
+        pct_value = progress.get("progress")
+        if isinstance(pct_value, (int, float)):
+            percent = max(0, min(100, int(pct_value * 100)))
+            self.progress_bar.setValue(percent)
+            status = f"Progress: {percent:.0f}%"
+        else:
+            status = "Processing..."
+
+        eta = progress.get("eta_relative")
+        if isinstance(eta, (int, float)) and eta >= 0:
+            if isinstance(pct_value, (int, float)):
+                status = f"Progress: {pct_value * 100:.1f}% - ETA {eta:.1f}s"
+            else:
+                status = f"ETA {eta:.1f}s"
+
+        self.status_label.setText(status)
