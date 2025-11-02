@@ -8,7 +8,9 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..api_client import GeneratedImage, StableDiffusionClient, StableDiffusionAPIError
 from ..models import GenerationRequest
-from .widgets import NoWheelComboBox, NoWheelDoubleSpinBox, NoWheelSpinBox
+from ..tag_completion import TagRepository
+from ..ui_config import UIConfig
+from .widgets import NoWheelComboBox, NoWheelDoubleSpinBox, NoWheelSpinBox, PromptTextEdit
 
 
 class GenerationWorker(QtCore.QObject):
@@ -35,13 +37,21 @@ class GenerationWorker(QtCore.QObject):
 class TextToImageWidget(QtWidgets.QWidget):
     """Tab that allows triggering txt2img generations."""
 
-    def __init__(self, client: StableDiffusionClient, parent: Optional[QtWidgets.QWidget] = None) -> None:
+    def __init__(
+        self,
+        client: StableDiffusionClient,
+        ui_config: UIConfig,
+        parent: Optional[QtWidgets.QWidget] = None,
+    ) -> None:
         super().__init__(parent=parent)
         self.client = client
         self.settings = QtCore.QSettings(self)
+        self.tag_repository = TagRepository()
+        self.ui_config = ui_config
         self._thread: Optional[QtCore.QThread] = None
         self._worker: Optional[GenerationWorker] = None
         self._loading_state = False
+        self.form_layout: Optional[QtWidgets.QFormLayout] = None
 
         self._build_ui()
         self._connect_signals()
@@ -55,14 +65,15 @@ class TextToImageWidget(QtWidgets.QWidget):
 
         self.form_widget = QtWidgets.QWidget()
         form_layout = QtWidgets.QFormLayout(self.form_widget)
+        self.form_layout = form_layout
         form_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
         form_layout.setSpacing(8)
 
-        self.prompt_edit = QtWidgets.QPlainTextEdit()
+        self.prompt_edit = PromptTextEdit(self.tag_repository.tags)
         self.prompt_edit.setPlaceholderText("Enter your prompt here...")
         self.prompt_edit.setFixedHeight(100)
 
-        self.negative_prompt_edit = QtWidgets.QPlainTextEdit()
+        self.negative_prompt_edit = PromptTextEdit(self.tag_repository.tags)
         self.negative_prompt_edit.setPlaceholderText("Negative prompt")
         self.negative_prompt_edit.setFixedHeight(80)
 
@@ -261,6 +272,7 @@ class TextToImageWidget(QtWidgets.QWidget):
         try:
             self._apply_initial_options(options)
             self._restore_persistent_state()
+            self._apply_ui_config()
         finally:
             self._loading_state = False
 
@@ -406,6 +418,53 @@ class TextToImageWidget(QtWidgets.QWidget):
             value = self.settings.value(key, type=str)
             if value is not None:
                 edit.setPlainText(value)
+
+    def _apply_ui_config(self) -> None:
+        entries = self.ui_config.section("txt2img") if self.ui_config else {}
+        if not entries:
+            return
+        mapping = self._ui_config_mapping()
+        for control, props in entries.items():
+            widget = mapping.get(self._normalize_config_name(control))
+            if widget is None:
+                continue
+            UIConfig.apply_properties(widget, props, self.form_layout)
+
+    def _ui_config_mapping(self) -> Dict[str, QtWidgets.QWidget]:
+        mapping: Dict[str, QtWidgets.QWidget] = {}
+
+        def register(names: tuple[str, ...], widget: QtWidgets.QWidget) -> None:
+            for name in names:
+                mapping[self._normalize_config_name(name)] = widget
+
+        register(("Prompt",), self.prompt_edit)
+        register(("Negative", "Negative prompt"), self.negative_prompt_edit)
+        register(("Checkpoint",), self.checkpoint_combo)
+        register(("VAE",), self.vae_combo)
+        register(("Text Encoder", "Text encoder"), self.text_encoder_combo)
+        register(("Sampler", "Sampling method"), self.sampler_combo)
+        register(("Scheduler", "Schedule type"), self.scheduler_combo)
+        register(("Sampling steps", "Steps"), self.steps_spin)
+        register(("CFG Scale", "CFG scale"), self.cfg_scale_spin)
+        register(("Clip skip",), self.clip_skip_spin)
+        register(("Width",), self.width_spin)
+        register(("Height",), self.height_spin)
+        register(("Batch size",), self.batch_size_spin)
+        register(("Batch count", "Batch"), self.batch_count_spin)
+        register(("Seed",), self.seed_spin)
+        register(("GPU Weights", "GPU Weights (MB)", "GPU weights"), self.gpu_weight_spin)
+        register(("Generate", "Generate button"), self.generate_button)
+        register(("Progress", "Progress bar"), self.progress_bar)
+        register(("Preview", "Image preview"), self.preview_label)
+        register(("Info", "Image info"), self.info_box)
+        register(("Status", "Status label"), self.status_label)
+
+        return mapping
+
+    @staticmethod
+    def _normalize_config_name(name: str) -> str:
+        cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in name)
+        return "_".join(part for part in cleaned.split())
 
     def _persist_combo_value(self, key: str, combo: QtWidgets.QComboBox, _index: int) -> None:
         if self._loading_state:

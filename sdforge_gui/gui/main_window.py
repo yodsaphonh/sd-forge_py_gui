@@ -6,15 +6,22 @@ from typing import Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..api_client import StableDiffusionClient
+from ..ui_config import UIConfig
 from .image2image_page import ImageToImageWidget
 from .image_info_page import ImageInfoWidget
 from .text2image_page import TextToImageWidget
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self, client: StableDiffusionClient, parent: Optional[QtWidgets.QWidget] = None) -> None:
+    def __init__(
+        self,
+        client: StableDiffusionClient,
+        ui_config: UIConfig,
+        parent: Optional[QtWidgets.QWidget] = None,
+    ) -> None:
         super().__init__(parent=parent)
         self.client = client
+        self.ui_config = ui_config
         self.setWindowTitle("Stable Diffusion Forge GUI")
         self.resize(1200, 720)
         self._apply_theme()
@@ -22,7 +29,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tab_widget = QtWidgets.QTabWidget()
         self.setCentralWidget(self.tab_widget)
 
-        self.tab_widget.addTab(TextToImageWidget(client, self), "Text to Image")
+        self.tab_widget.addTab(TextToImageWidget(client, ui_config, self), "Text to Image")
         self.tab_widget.addTab(ImageToImageWidget(self), "Image to Image")
         self.tab_widget.addTab(ImageInfoWidget(self), "Image Info")
 

@@ -7,6 +7,7 @@ from typing import Optional
 from PyQt6 import QtCore, QtWidgets
 
 from ..api_client import StableDiffusionClient
+from ..ui_config import UIConfig
 from .main_window import MainWindow
 
 
@@ -32,8 +33,16 @@ def run_app(argv: Optional[list[str]] = None) -> int:
     QtCore.QCoreApplication.setApplicationName("StableDiffusionGUI")
     app = QtWidgets.QApplication([])
     client = StableDiffusionClient(base_url=args.api_url)
+    ui_config = UIConfig()
 
-    window = MainWindow(client)
+    window = MainWindow(client, ui_config)
     window.show()
+
+    if ui_config.error:
+        QtWidgets.QMessageBox.warning(
+            window,
+            "UI configuration error",
+            f"Failed to load ui-config.json: {ui_config.error}",
+        )
 
     return app.exec()

@@ -52,6 +52,30 @@ A PyQt-based desktop interface for driving a running Stable Diffusion Forge inst
 - Press **Generate** to start a job. A progress bar and status line will update using the Forge `/progress` endpoint.
 - When finished, the preview image, seed, and full metadata are displayed on the right-hand panel. Use the tabs to switch to Image-to-Image or Image Info workflows.
 
+### Prompt tag auto-completion
+
+- The prompt and negative prompt editors include popup suggestions compatible with the [a1111 tag complete](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete) format.
+- A curated starter list of tags ships in `sdforge_gui/data/tagcomplete/tags.csv`. Replace or extend it with your own CSV/JSON/TXT files to customize the vocabulary.
+- To reuse the full tag set from the upstream WebUI extension, copy its `tags` directory into `sdforge_gui/data/tagcomplete/` or point the environment variable `SDFORGE_TAGCOMPLETE_PATH` at the extracted repository. Multiple directories can be provided by separating paths with your platform’s path separator (e.g., `;` on Windows, `:` on macOS/Linux).
+- Press `Ctrl+Space` inside a prompt box to force the suggestion popup if it does not appear automatically.
+
+### UI customization with `ui-config.json`
+
+- Edit the top-level `ui-config.json` file to toggle controls or preload values without modifying the source code.
+- Entries follow the pattern `"<tab>/<control>/<property>"`. For example, the Text-to-Image prompt visibility can be forced with:
+
+  ```json
+  {
+    "txt2img/Prompt/visible": true,
+    "txt2img/Sampling method/value": "Euler a",
+    "txt2img/Sampling steps/value": 25,
+    "txt2img/CFG scale/value": 6.5
+  }
+  ```
+
+- Supported properties include `visible`, `enabled`, `value`, `minimum`, `maximum`, and `step`. Control names are matched loosely, so `"Sampling method"` and `"Sampler"` resolve to the same combo box.
+- Leave the file as `{}` to keep the default layout. Any configuration errors are reported when the application launches.
+
 ## Troubleshooting
 
 - If the GUI immediately reports an API error, confirm that the Forge server is running and the API flag is enabled.
