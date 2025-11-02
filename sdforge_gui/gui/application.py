@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from PyQt6 import QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from ..api_client import StableDiffusionClient
 from .main_window import MainWindow
@@ -24,6 +24,9 @@ def run_app(argv: Optional[list[str]] = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
 
+    QtCore.QLocale.setDefault(
+        QtCore.QLocale(QtCore.QLocale.Language.English, QtCore.QLocale.Country.UnitedStates)
+    )
     app = QtWidgets.QApplication([])
     client = StableDiffusionClient(base_url=args.api_url)
 

@@ -7,6 +7,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..api_client import GeneratedImage, StableDiffusionClient, StableDiffusionAPIError
 from ..models import GenerationRequest
+from .widgets import NoWheelComboBox, NoWheelDoubleSpinBox, NoWheelSpinBox
 
 
 class GenerationWorker(QtCore.QObject):
@@ -62,50 +63,50 @@ class TextToImageWidget(QtWidgets.QWidget):
         self.negative_prompt_edit.setPlaceholderText("Negative prompt")
         self.negative_prompt_edit.setFixedHeight(80)
 
-        self.checkpoint_combo = QtWidgets.QComboBox()
-        self.vae_combo = QtWidgets.QComboBox()
-        self.text_encoder_combo = QtWidgets.QComboBox()
-        self.sampler_combo = QtWidgets.QComboBox()
-        self.scheduler_combo = QtWidgets.QComboBox()
+        self.checkpoint_combo = NoWheelComboBox()
+        self.vae_combo = NoWheelComboBox()
+        self.text_encoder_combo = NoWheelComboBox()
+        self.sampler_combo = NoWheelComboBox()
+        self.scheduler_combo = NoWheelComboBox()
 
-        self.steps_spin = QtWidgets.QSpinBox()
+        self.steps_spin = NoWheelSpinBox()
         self.steps_spin.setRange(1, 200)
         self.steps_spin.setValue(20)
 
-        self.clip_skip_spin = QtWidgets.QSpinBox()
+        self.clip_skip_spin = NoWheelSpinBox()
         self.clip_skip_spin.setRange(0, 12)
         self.clip_skip_spin.setSpecialValueText("Default")
         self.clip_skip_spin.setValue(0)
 
-        self.cfg_scale_spin = QtWidgets.QDoubleSpinBox()
+        self.cfg_scale_spin = NoWheelDoubleSpinBox()
         self.cfg_scale_spin.setRange(1.0, 30.0)
         self.cfg_scale_spin.setSingleStep(0.5)
         self.cfg_scale_spin.setValue(7.0)
 
-        self.width_spin = QtWidgets.QSpinBox()
+        self.width_spin = NoWheelSpinBox()
         self.width_spin.setRange(64, 2048)
         self.width_spin.setSingleStep(64)
         self.width_spin.setValue(512)
 
-        self.height_spin = QtWidgets.QSpinBox()
+        self.height_spin = NoWheelSpinBox()
         self.height_spin.setRange(64, 2048)
         self.height_spin.setSingleStep(64)
         self.height_spin.setValue(512)
 
-        self.batch_size_spin = QtWidgets.QSpinBox()
+        self.batch_size_spin = NoWheelSpinBox()
         self.batch_size_spin.setRange(1, 8)
         self.batch_size_spin.setValue(1)
 
-        self.batch_count_spin = QtWidgets.QSpinBox()
+        self.batch_count_spin = NoWheelSpinBox()
         self.batch_count_spin.setRange(1, 16)
         self.batch_count_spin.setValue(1)
 
-        self.seed_spin = QtWidgets.QSpinBox()
+        self.seed_spin = NoWheelSpinBox()
         self.seed_spin.setRange(-1, 2_147_483_647)
         self.seed_spin.setSpecialValueText("Random")
         self.seed_spin.setValue(-1)
 
-        self.gpu_weight_spin = QtWidgets.QSpinBox()
+        self.gpu_weight_spin = NoWheelSpinBox()
         self.gpu_weight_spin.setRange(0, 32_768)
         self.gpu_weight_spin.setSpecialValueText("Auto")
         self.gpu_weight_spin.setValue(0)

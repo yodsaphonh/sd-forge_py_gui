@@ -1,5 +1,4 @@
 """HTTP client for interacting with the Stable Diffusion Forge API."""
-
 from __future__ import annotations
 
 import base64
@@ -49,16 +48,10 @@ class StableDiffusionClient:
         params: Optional[Dict[str, Any]] = None,
     ) -> Any:
         logger.debug("Request %s %s", method, path)
-        response = requests.request(
-            method, self._url(path), json=json, params=params, timeout=120
-        )
+        response = requests.request(method, self._url(path), json=json, params=params, timeout=120)
         if not response.ok:
-            logger.error(
-                "API request failed (%s): %s", response.status_code, response.text
-            )
-            raise StableDiffusionAPIError(
-                response.text, status_code=response.status_code
-            )
+            logger.error("API request failed (%s): %s", response.status_code, response.text)
+            raise StableDiffusionAPIError(response.text, status_code=response.status_code)
         return response.json()
 
     # --- metadata endpoints --------------------------------------------
@@ -93,13 +86,13 @@ class StableDiffusionClient:
         return []
 
     def list_vaes(self) -> List[str]:
-        data = self._request("GET", "/sdapi/v1/sd-modules")
+        data = self._request("GET", "/sdapi/v1/sd-vae")
         if isinstance(data, list):
             return self._extract_names(data, "model_name", "title", "filename", "name")
         return []
 
     def list_text_encoders(self) -> List[str]:
-        data = self._request("GET", "/sdapi/v1/sd-modules")
+        data = self._request("GET", "/sdapi/v1/sd-embeddings")
         names: List[str] = []
         if isinstance(data, dict):
             for key in ("loaded", "skipped"):
@@ -163,6 +156,4 @@ class StableDiffusionClient:
 
     # --- progress -------------------------------------------------------
     def get_progress(self) -> Dict[str, Any]:
-        return self._request(
-            "GET", "/sdapi/v1/progress", params={"skip_current_image": True}
-        )
+        return self._request("GET", "/sdapi/v1/progress", params={"skip_current_image": True})
