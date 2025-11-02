@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
-from requests.utils import json as json_utils
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class StableDiffusionClient:
         info = data.get("info")
         if isinstance(info, str):
             try:
-                info = json_utils.loads(info)
+                info = json.loads(info)
             except Exception:  # pragma: no cover - best effort decoding
                 info = {"raw": info}
         if not isinstance(info, dict):
