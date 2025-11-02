@@ -27,6 +27,9 @@ def run_app(argv: Optional[list[str]] = None) -> int:
     QtCore.QLocale.setDefault(
         QtCore.QLocale(QtCore.QLocale.Language.English, QtCore.QLocale.Country.UnitedStates)
     )
+    QtCore.QCoreApplication.setOrganizationName("SDForge")
+    QtCore.QCoreApplication.setOrganizationDomain("sdforge.app")
+    QtCore.QCoreApplication.setApplicationName("StableDiffusionGUI")
     app = QtWidgets.QApplication([])
     client = StableDiffusionClient(base_url=args.api_url)
 

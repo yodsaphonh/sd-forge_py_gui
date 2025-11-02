@@ -1,6 +1,7 @@
 """Qt widgets for the Text-to-Image tab."""
 from __future__ import annotations
 
+from functools import partial
 from typing import Any, Callable, Dict, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -37,8 +38,10 @@ class TextToImageWidget(QtWidgets.QWidget):
     def __init__(self, client: StableDiffusionClient, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent=parent)
         self.client = client
+        self.settings = QtCore.QSettings(self)
         self._thread: Optional[QtCore.QThread] = None
         self._worker: Optional[GenerationWorker] = None
+        self._loading_state = False
 
         self._build_ui()
         self._connect_signals()
@@ -173,9 +176,42 @@ class TextToImageWidget(QtWidgets.QWidget):
         self.generate_button.clicked.connect(self._on_generate_clicked)
         self.progress_timer.timeout.connect(self._refresh_progress)
 
+        combo_pairs = {
+            "text2image/checkpoint": self.checkpoint_combo,
+            "text2image/vae": self.vae_combo,
+            "text2image/text_encoder": self.text_encoder_combo,
+            "text2image/sampler": self.sampler_combo,
+            "text2image/scheduler": self.scheduler_combo,
+        }
+        for key, combo in combo_pairs.items():
+            combo.currentIndexChanged.connect(partial(self._persist_combo_value, key, combo))
+
+        spin_pairs = {
+            "text2image/steps": self.steps_spin,
+            "text2image/clip_skip": self.clip_skip_spin,
+            "text2image/width": self.width_spin,
+            "text2image/height": self.height_spin,
+            "text2image/batch_size": self.batch_size_spin,
+            "text2image/batch_count": self.batch_count_spin,
+            "text2image/seed": self.seed_spin,
+            "text2image/gpu_weights": self.gpu_weight_spin,
+        }
+        for key, spin in spin_pairs.items():
+            spin.valueChanged.connect(partial(self._persist_spin_value, key))
+
+        self.cfg_scale_spin.valueChanged.connect(partial(self._persist_double_value, "text2image/cfg_scale"))
+
+        text_pairs = {
+            "text2image/prompt": self.prompt_edit,
+            "text2image/negative_prompt": self.negative_prompt_edit,
+        }
+        for key, edit in text_pairs.items():
+            edit.textChanged.connect(partial(self._persist_text_value, key, edit))
+
     # ------------------------------------------------------------------
     def _load_initial_metadata(self) -> None:
         errors: list[str] = []
+        self._loading_state = True
 
         def fetch_list(name: str, callback: Callable[[], list[str]]) -> list[str]:
             try:
@@ -222,7 +258,11 @@ class TextToImageWidget(QtWidgets.QWidget):
         else:
             self.status_label.setText("Metadata loaded.")
 
-        self._apply_initial_options(options)
+        try:
+            self._apply_initial_options(options)
+            self._restore_persistent_state()
+        finally:
+            self._loading_state = False
 
     def _apply_initial_options(self, options: Dict[str, Any]) -> None:
         if not options:
@@ -317,6 +357,83 @@ class TextToImageWidget(QtWidgets.QWidget):
             combo.addItem(value, userData=value)
             index = combo.count() - 1
         combo.setCurrentIndex(index)
+
+    # ------------------------------------------------------------------
+    def _restore_persistent_state(self) -> None:
+        combos = {
+            "text2image/checkpoint": self.checkpoint_combo,
+            "text2image/vae": self.vae_combo,
+            "text2image/text_encoder": self.text_encoder_combo,
+            "text2image/sampler": self.sampler_combo,
+            "text2image/scheduler": self.scheduler_combo,
+        }
+        for key, combo in combos.items():
+            if not self.settings.contains(key):
+                continue
+            value = self.settings.value(key)
+            if value not in (None, ""):
+                self._select_combo_value(combo, value)
+
+        int_widgets: dict[str, QtWidgets.QSpinBox] = {
+            "text2image/steps": self.steps_spin,
+            "text2image/clip_skip": self.clip_skip_spin,
+            "text2image/width": self.width_spin,
+            "text2image/height": self.height_spin,
+            "text2image/batch_size": self.batch_size_spin,
+            "text2image/batch_count": self.batch_count_spin,
+            "text2image/seed": self.seed_spin,
+            "text2image/gpu_weights": self.gpu_weight_spin,
+        }
+        for key, widget in int_widgets.items():
+            if not self.settings.contains(key):
+                continue
+            value = self.settings.value(key, type=int)
+            if isinstance(value, int) and value >= widget.minimum():
+                widget.setValue(value)
+
+        if self.settings.contains("text2image/cfg_scale"):
+            cfg_value = self.settings.value("text2image/cfg_scale", type=float)
+            if isinstance(cfg_value, (int, float)):
+                self.cfg_scale_spin.setValue(float(cfg_value))
+
+        text_edits: dict[str, QtWidgets.QPlainTextEdit] = {
+            "text2image/prompt": self.prompt_edit,
+            "text2image/negative_prompt": self.negative_prompt_edit,
+        }
+        for key, edit in text_edits.items():
+            if not self.settings.contains(key):
+                continue
+            value = self.settings.value(key, type=str)
+            if value is not None:
+                edit.setPlainText(value)
+
+    def _persist_combo_value(self, key: str, combo: QtWidgets.QComboBox, _index: int) -> None:
+        if self._loading_state:
+            return
+        value = combo.currentData()
+        if value in (None, ""):
+            self.settings.remove(key)
+        else:
+            self.settings.setValue(key, value)
+        self.settings.sync()
+
+    def _persist_spin_value(self, key: str, value: int) -> None:
+        if self._loading_state:
+            return
+        self.settings.setValue(key, int(value))
+        self.settings.sync()
+
+    def _persist_double_value(self, key: str, value: float) -> None:
+        if self._loading_state:
+            return
+        self.settings.setValue(key, float(value))
+        self.settings.sync()
+
+    def _persist_text_value(self, key: str, edit: QtWidgets.QPlainTextEdit) -> None:
+        if self._loading_state:
+            return
+        self.settings.setValue(key, edit.toPlainText())
+        self.settings.sync()
 
     def _select_combo_by_index(self, combo: QtWidgets.QComboBox, index: int) -> None:
         if index < 0:
