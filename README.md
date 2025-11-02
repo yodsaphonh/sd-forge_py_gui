@@ -14,7 +14,7 @@ A PyQt-based desktop interface for driving a running Stable Diffusion Forge inst
 2. Install the required Python dependencies:
 
    ```bash
-   pip install PyQt6 requests
+   pip install -r requirements.txt
    ```
 
 3. Clone or download this repository.
@@ -34,11 +34,15 @@ A PyQt-based desktop interface for driving a running Stable Diffusion Forge inst
    python main.py
    ```
 
+   On Windows you can double-click **run.bat** to start the GUI with the default settings.
+
 3. (Optional) If your Forge instance listens on a different host or port, provide the base URL:
 
    ```bash
    python main.py --api-url http://192.168.0.42:7860
    ```
+
+   The batch script also forwards any extra arguments, so you can run `run.bat --api-url http://192.168.0.42:7860`.
 
 ## Text-to-Image workflow
 
@@ -53,3 +57,7 @@ A PyQt-based desktop interface for driving a running Stable Diffusion Forge inst
 - If the GUI immediately reports an API error, confirm that the Forge server is running and the API flag is enabled.
 - Progress polling relies on the `/sdapi/v1/progress` endpoint. Some community builds may disable it; in that case the progress bar may stay at 0 until completion.
 - Use the terminal where you launched the GUI to inspect detailed Python tracebacks when reporting issues.
+
+## Updating
+
+Run `update.bat` to pull the latest code (when cloned via git) and install/upgrade the Python dependencies listed in `requirements.txt`.
