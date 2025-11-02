@@ -21,12 +21,5 @@ if exist ".venv\Scripts\python.exe" (
     set "PYTHON_EXE=python"
 )
 
-echo Installing Python dependencies...
-"%PYTHON_EXE%" -m pip install --upgrade -r requirements.txt
-if errorlevel 1 (
-    echo Dependency installation failed.
-    exit /b 1
-)
-
 echo Update complete.
 endlocal
