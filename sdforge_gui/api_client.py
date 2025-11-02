@@ -24,6 +24,10 @@ class GeneratedImage:
 class StableDiffusionAPIError(RuntimeError):
     """Exception raised when the Stable Diffusion Forge API returns an error."""
 
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class StableDiffusionClient:
     """A thin wrapper around the Stable Diffusion Forge HTTP API."""
@@ -47,7 +51,7 @@ class StableDiffusionClient:
         response = requests.request(method, self._url(path), json=json, params=params, timeout=120)
         if not response.ok:
             logger.error("API request failed (%s): %s", response.status_code, response.text)
-            raise StableDiffusionAPIError(response.text)
+            raise StableDiffusionAPIError(response.text, status_code=response.status_code)
         return response.json()
 
     # --- metadata endpoints --------------------------------------------
@@ -68,7 +72,13 @@ class StableDiffusionClient:
         return [item.get("name") for item in data]
 
     def list_schedulers(self) -> List[str]:
-        data = self._request("GET", "/sdapi/v1/schedulers")
+        try:
+            data = self._request("GET", "/sdapi/v1/schedulers")
+        except StableDiffusionAPIError as error:
+            if error.status_code == 404:
+                logger.info("Schedulers endpoint unavailable; returning empty list")
+                return []
+            raise
         return [item.get("name") for item in data]
 
     # --- generation -----------------------------------------------------
