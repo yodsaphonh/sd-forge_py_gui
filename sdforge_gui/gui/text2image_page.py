@@ -229,6 +229,14 @@ class TextToImageWidget(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------
     def _on_generate_clicked(self) -> None:
+        if self._thread is not None and self._thread.isRunning():
+            QtWidgets.QMessageBox.information(
+                self,
+                "Generation in progress",
+                "Please wait for the current generation to finish before starting a new one.",
+            )
+            return
+
         request = self._build_request()
         if not request.prompt:
             QtWidgets.QMessageBox.information(self, "Missing prompt", "Please enter a prompt to generate.")
@@ -239,7 +247,7 @@ class TextToImageWidget(QtWidgets.QWidget):
         self.info_box.clear()
         self.status_label.setText("Generating...")
 
-        self._thread = QtCore.QThread()
+        self._thread = QtCore.QThread(self)
         worker = GenerationWorker(self.client, request)
         self._worker = worker
         worker.moveToThread(self._thread)
@@ -250,7 +258,7 @@ class TextToImageWidget(QtWidgets.QWidget):
         worker.error.connect(self._on_generation_error)
         worker.error.connect(self._thread.quit)
         worker.error.connect(worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._on_thread_finished)
 
         self._thread.start()
         self.progress_timer.start()
@@ -262,8 +270,6 @@ class TextToImageWidget(QtWidgets.QWidget):
         self.generate_button.setEnabled(True)
         self.status_label.setText("Generation finished.")
         self.progress_bar.setValue(100)
-        self._thread = None
-        self._worker = None
 
         if not images:
             self.info_box.setPlainText("No images returned by the API.")
@@ -289,9 +295,18 @@ class TextToImageWidget(QtWidgets.QWidget):
         self.progress_timer.stop()
         self.generate_button.setEnabled(True)
         self.status_label.setText("Generation failed.")
-        self._thread = None
-        self._worker = None
         QtWidgets.QMessageBox.critical(self, "Generation error", message)
+
+    @QtCore.pyqtSlot()
+    def _on_thread_finished(self) -> None:
+        thread = self._thread
+        self._worker = None
+        self._thread = None
+        if thread is None:
+            return
+        if thread.isRunning():  # pragma: no cover - safety guard
+            thread.wait()
+        thread.deleteLater()
 
     # ------------------------------------------------------------------
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # pragma: no cover - UI only
